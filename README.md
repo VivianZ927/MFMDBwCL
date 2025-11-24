@@ -1,2 +1,1 @@
-# MFMDBwCL
- MutipleFiltersMineralAnalysisDashBoardwithCleanedLocations
+The dashboard code with clean locations
