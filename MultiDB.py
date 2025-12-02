@@ -38,7 +38,7 @@ print("Loading data...")
 with open(PICKLE_PATH, "rb") as f:
     raw_base = pickle.load(f)
 
-
+#
 # def optimize_df(df):
 #     df = df.copy()
 #
@@ -63,11 +63,11 @@ with open(PICKLE_PATH, "rb") as f:
 #             df[col] = df[col].astype('category')
 #
 #     return df
-
-
+#
+#
 # for _m, _df in raw_base.items():
 #     # Categorical columns
-#     for c in ["SamplingPoint", "GrossWT", "region", "Season"]:
+#     for c in ['notation',"SamplingPoint", "GrossWT", "region", "Season"]:
 #         if c in _df.columns:
 #             _df[c] = _df[c].astype("category")
 #
@@ -84,7 +84,7 @@ with open(PICKLE_PATH, "rb") as f:
 #             errors="coerce"
 #         )
 #     raw_base[_m]=optimize_df(_df)
-
+#
 # print("Data loaded and optimized!")
 # with open('26compressedMinerals.pkl', 'wb') as fp:
 #     pickle.dump(raw_base, fp)
@@ -142,7 +142,7 @@ def select_SPtopk_fast(base, mineral, k):
     if base.empty:
         return {}
     else:
-        gb = ["SamplingPoint", "lat", "lon", "GrossWT"]
+        gb = ['notation',"SamplingPoint", "lat", "lon", "GrossWT"]
 
         # Compute all stats at once, then filter to top k
         all_stats = base.groupby(gb, observed=True, sort=False).agg(
@@ -302,7 +302,7 @@ def build_table_data(point_agg):
         units = units[0].split("(")[-1]
         unit = units.split(")")[0]
         tbl = (
-            d[["SamplingPoint", "GrossWT", "average_concentration", 'std_concentration', 'num_observations']]
+            d[["notation","SamplingPoint", "GrossWT", "average_concentration", 'std_concentration', 'num_observations']]
             .drop_duplicates()
             .sort_values("average_concentration", ascending=False)
         )
@@ -314,7 +314,8 @@ def build_table_data(point_agg):
         tbl = tbl.assign(MonthlyStandardDivation=tbl["std_concentration"].round(2).astype(str))
         tbl = tbl.assign(NumberOfObservations=tbl["num_observations"].astype(str))
         tbl = tbl.assign(WaterType=tbl["GrossWT"].astype(str))
-        tbl = tbl[["SamplingPoint", "WaterType", table_cap, "MonthlyStandardDivation", "NumberOfObservations"]]
+        tbl = tbl.assign(Notation=tbl["notation"].astype(str))
+        tbl = tbl[["Notation","SamplingPoint", "WaterType", table_cap, "MonthlyStandardDivation", "NumberOfObservations"]]
         tbs[m] = tbl.to_dict("records")
     return tbs
 
@@ -628,19 +629,7 @@ def sync_dependents(chosen_mineral):
     regions = ['NE', 'NW', 'SE', 'SW']
 
     return wtypes, wtypes, regions, regions
-    #
-    # # ✅ CORRECT
-    # base = define_base(
-    #     raw_base,  # dfs parameter
-    #     chosen_mineral,  # mineral parameter
-    #     start_y,  # start_y parameter
-    #     end_y,  # end_y parameter
-    #     regions,  # regions parameter
-    #     wtypes  # watertypes parameter
-    # )
-    #
-    # # Then get sp_dict separately
-    # sp_dict = select_SPtopk_fast(base, chosen_mineral, topkn)
+
 
 
 @callback(
