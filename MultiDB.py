@@ -357,7 +357,7 @@ def build_table_data(point_agg):
     return tbs
 
 
-def build_chart_table(initial_table, initial_dot, k):
+def build_chart_table(initial_table, initial_dot, k, click_id=None):
     """Build table and chart components"""
     table_list = []
     dot_charts = []
@@ -392,12 +392,15 @@ def build_chart_table(initial_table, initial_dot, k):
             )
         )
 
-    for fig in initial_dot:
+    for idx, fig in enumerate(initial_dot):
+        # Add unique key to each graph based on click ID
+        graph_key = f"graph-{click_id}-{idx}" if click_id else f"graph-{idx}"
         dot_charts.append(
             dcc.Graph(
                 figure=fig,
                 style={"padding": 10, "width": "100%"},
-                config={"displayModeBar": False}  # Hide mode bar for speed
+                config={"displayModeBar": False},
+                id=graph_key  # ADD THIS
             )
         )
 
@@ -778,7 +781,7 @@ def update_all(n_click,chosen_mineral, chosen_wtypes, chosen_regions,
     geo_fig = build_geo_fig(sp_dict, chosen_mineral, k=topkn,
                             start_y=start_y, end_y=end_y)
     table_data = build_table_data(sp_dict)
-    table_list, dot_charts = build_chart_table(table_data, dot_figs, k=topkn)
+    table_list, dot_charts = build_chart_table(table_data, dot_figs, k=topkn, click_id=n_click)
 
     # If there is no time-series figure, show a text message instead
     if not dot_charts:
