@@ -6,6 +6,7 @@ from dash import (
     Dash, html, dash_table, dcc, callback,
     Output, Input, State
 )
+from dash.exceptions import PreventUpdate
 
 # =========================
 # Config
@@ -14,6 +15,7 @@ PICKLE_PATH = "26compressedMinerals.pkl"
 DEFAULT_MINERAL = 'Lithium'
 S_Y, E_Y = 2020, 2025
 TOP_K = 5
+latest_click_ts = 0
 px.set_mapbox_access_token(os.environ.get("MAPBOX_TOKEN"))
 UK_GEO = dict(
     scope="europe",
@@ -255,16 +257,49 @@ def build_geo_fig(point_agg, mineral, k, start_y, end_y):
 
 
 def build_dot_fig(point_agg):
-    """Optimized: Use pre-computed datetime column"""
+    """
+    Build time-series (dot/line) figures for the selected top-k sampling points.
+
+    Returns
+    -------
+    list[plotly.graph_objects.Figure]
+        A list with a single figure (for Dash) or an empty list if no data.
+    """
     if not point_agg:
         return []
 
-    label = list(point_agg.keys())[0]
-    col = [c for c in point_agg[label].columns if c.startswith("monthly concentration")][0]
-    unit = col.split(" ")[-1]
-    ma = point_agg[label].rename(columns={col: "Detected Concentration {}".format(unit)})
+    # We only ever expect one key: the mineral name
+    label = next(iter(point_agg))
+    df = point_agg[label]
 
-    conc = ma["Detected Concentration {}".format(unit)].dropna()
+    # Find the concentration column: "monthly concentration (unit)"
+    conc_cols = [c for c in df.columns if c.startswith("monthly concentration")]
+    if not conc_cols:
+        return []
+
+    conc_col = conc_cols[0]
+
+    # Extract unit from "monthly concentration (unit)"
+    # e.g. "monthly concentration (µg/L)" -> "µg/L"
+    unit = conc_col.split("(", 1)[-1].split(")", 1)[0] if "(" in conc_col else ""
+
+    # Ensure we have a datetime column; if not, build from Year/Month
+    ma = df.copy()
+    if "datetime" not in ma.columns and {"Year", "Month"}.issubset(ma.columns):
+        ma["datetime"] = pd.to_datetime(
+            {"year": ma["Year"], "month": ma["Month"], "day": 1},
+            errors="coerce"
+        )
+
+    # If there's still no datetime, we can't plot over time
+    if "datetime" not in ma.columns:
+        return []
+
+    # Rename the concentration column for a nicer y-axis label
+    y_label = f"Detected Concentration ({unit})" if unit else "Detected Concentration"
+    ma = ma.rename(columns={conc_col: y_label})
+
+    conc = ma[y_label].dropna()
     if conc.empty:
         return []
 
@@ -273,23 +308,24 @@ def build_dot_fig(point_agg):
     fig = px.line(
         ma,
         x="datetime",
-        y="Detected Concentration {}".format(unit),
+        y=y_label,
         color="SamplingPoint",
         symbol="SamplingPoint",
-        title=f"Concentration over Time — {label}{unit}",
-
+        title=f"Concentration over Time — {label} ({unit})" if unit else f"Concentration over Time — {label}",
     )
 
+    # Set a padded y-range for nicer visuals
     if pd.notna(ymin) and pd.notna(ymax):
         pad = max(1.0, 0.05 * (ymax - ymin) if ymax > ymin else 1.0)
-        fig.update_layout(yaxis_range=[ymin - pad, ymax + pad])
+        fig.update_yaxes(range=[ymin - pad, ymax + pad])
 
-    fig.update_traces(marker=dict(size=9))
+    fig.update_traces(mode="lines+markers", marker=dict(size=9))
     fig.update_layout(
-        # uirevision=revision_key,  # Use the passed revision key
         xaxis_title="Time",
-        margin=dict(l=40, r=20, t=40, b=40)
+        yaxis_title=y_label,
+        margin=dict(l=40, r=20, t=40, b=40),
     )
+
     return [fig]
 
 
@@ -633,75 +669,131 @@ def sync_dependents(chosen_mineral):
 
 
 @callback(
-    Output("mineral-dot-chart", "children"),
+Output("mineral-dot-chart", "children"),
     Output("mineral-table", "children"),
     Output("mineral-geoscatter-chart", "figure"),
     Output("water-type-bar", "figure"),
+    Output("submit", "disabled"),
     Input("submit", "n_clicks"),
+    State("submit", "n_clicks_timestamp"),
     State("mineral-dropdown", "value"),
     State("watertype-checkbox", "value"),
     State("region-checkbox", "value"),
     State("start-year", "value"),
     State("end-year", "value"),
-    State("topkn", "value")
+    State("topkn", "value"),
+    prevent_initial_call=True,  # optional but recommended
 )
-def update_all(n_click, chosen_mineral, chosen_wtypes, chosen_regions, start_y, end_y, topkn):
-    """Update all visualizations when submit is clicked"""
+def update_all(n_click,click_ts, chosen_mineral, chosen_wtypes, chosen_regions,
+               start_y, end_y, topkn):
+    """Update all visualizations when 'Update Dashboard' is clicked."""
 
-    # Handle None values
+    global latest_click_ts
+
+    # No clicks at all -> do nothing
+    if n_click is None or click_ts is None:
+        raise PreventUpdate
+
+    this_ts = click_ts
+
+    # -------------------------
+    # 1. Normalise inputs
+    # -------------------------
     if chosen_mineral is None:
         chosen_mineral = DEFAULT_MINERAL
-    if chosen_wtypes is None:
-        chosen_wtypes = init_wtypes
-    if chosen_regions is None:
-        chosen_regions = init_regions
+
+    if topkn is None:
+        topkn = TOP_K
+    topkn = int(topkn)
+    if topkn < 1:
+        topkn = 1
+
     if start_y is None:
         start_y = S_Y
     if end_y is None:
         end_y = E_Y
-    if topkn is None:
-        topkn = TOP_K
-
-    topkn = int(topkn)
-    if topkn < 1:
-        topkn = 1
-    # Get valid options
-    all_wtypes = get_watertypes(raw_base, chosen_mineral) or []
-    all_regions = get_regions()
-
-    wtypes = chosen_wtypes if chosen_wtypes else all_wtypes
-    regions = chosen_regions if chosen_regions else all_regions
-
     start_y = int(start_y)
     end_y = int(end_y)
     if start_y > end_y:
         start_y, end_y = end_y, start_y
 
+    all_wtypes = get_watertypes(raw_base, chosen_mineral) or []
+    all_regions = get_regions()
+
+    # If user unchecked everything, fall back to "all"
+    wtypes = chosen_wtypes if chosen_wtypes else all_wtypes
+    regions = chosen_regions if chosen_regions else all_regions
+
+    # -------------------------
+    # 2. Filter base dataframe
+    # -------------------------
     base = define_base(raw_base, chosen_mineral, start_y, end_y, regions, wtypes)
     sp_dict = select_SPtopk_fast(base, chosen_mineral, topkn)
 
+    # Helper: build an empty map compatible with px.scatter_map
+    def _blank_map(title_suffix="No valid data"):
+        empty_df = pd.DataFrame({"lat": [], "lon": []})
+        fig = px.scatter_map(
+            empty_df,
+            lat="lat",
+            lon="lon",
+            zoom=5,
+            center={"lat": 54.5, "lon": -3.0},
+            map_style="open-street-map",
+            title=f"UK – {chosen_mineral} (Top {topkn}) ({start_y}-{end_y}) - {title_suffix}",
+        )
+        return fig
+
+    # -------------------------
+    # 3. Handle no data
+    # -------------------------
     if base.empty or not sp_dict:
         empty_note = html.Div(
             "No data matches the selected filters.",
-            style={"padding": 20, "color": "#999", "textAlign": "center", "fontSize": 14}
+            style={"padding": 20, "color": "#999", "textAlign": "center", "fontSize": 14},
         )
-        empty_geo = px.scatter_map()
-        empty_geo.update_layout(
-            mapbox_style="streets",
-            mapbox=dict(center=dict(lat=54.5, lon=-3.0), zoom=5),
-            uirevision="uk_map"
-        )
-        return [empty_note], [], empty_geo, px.bar()
+        empty_geo = _blank_map("No data")
+        empty_bar = px.bar()  # empty bar chart
 
-    # Build visualizations with revision key
+        # BEFORE returning: drop stale results
+        if this_ts < latest_click_ts:
+            raise PreventUpdate
+        latest_click_ts = this_ts
+
+        # dot children, table children, geo fig, bar fig, button disabled?
+        return [empty_note], [], empty_geo, empty_bar, False
+
+    # -------------------------
+    # 4. Build figures & tables
+    # -------------------------
     dot_figs = build_dot_fig(sp_dict)
-    geo_fig = build_geo_fig(sp_dict, chosen_mineral, k=topkn, start_y=start_y, end_y=end_y)
+    geo_fig = build_geo_fig(sp_dict, chosen_mineral, k=topkn,
+                            start_y=start_y, end_y=end_y)
     table_data = build_table_data(sp_dict)
     table_list, dot_charts = build_chart_table(table_data, dot_figs, k=topkn)
+
+    # If there is no time-series figure, show a text message instead
+    if not dot_charts:
+        dot_charts = [html.Div(
+            "No concentration measurements for the selected filters.",
+            style={"padding": 20, "color": "#999", "textAlign": "center"}
+        )]
+
     wt_df = select_WTtopk(base, chosen_mineral, topkn)
     bar_fig = build_bar_chart(wt_df, chosen_mineral)
 
-    return dot_charts, table_list, geo_fig, bar_fig
+    # -------------------------
+    # 5. FINAL STALE CHECK
+    # -------------------------
+    if this_ts < latest_click_ts:
+        # Another, newer click finished while we were computing -> discard
+        raise PreventUpdate
+
+    # This is now the newest result
+    latest_click_ts = this_ts
+
+    # dot children, table children, geo fig, bar fig, button disabled?
+    return dot_charts, table_list, geo_fig, bar_fig, False
 
 
 if __name__ == "__main__":
