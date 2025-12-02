@@ -324,6 +324,7 @@ def build_dot_fig(point_agg):
         xaxis_title="Time",
         yaxis_title=y_label,
         margin=dict(l=40, r=20, t=40, b=40),
+        uirevision="constant",
     )
 
     return [fig]
@@ -441,7 +442,7 @@ def build_bar_chart(df_for_bar, mineral):
         title="Water Type — Average Concentration (Top types)",
     )
     fig.update_layout(
-        uirevision="keep",
+        # uirevision="keep",
         margin=dict(l=40, r=20, t=40, b=40)
     )
     return fig
@@ -653,18 +654,28 @@ app.layout = html.Div(
     Output("region-checkbox", "options"),
     Output("region-checkbox", "value"),
     Input("mineral-dropdown", "value"),
-    # State("watertype-checkbox", "value"),
-    # State("region-checkbox", "value"),
+    State("watertype-checkbox", "value"),
+    State("region-checkbox", "value"),
+    prevent_initial_call=True,
 )
-def sync_dependents(chosen_mineral):
-    """Update dependent dropdowns when mineral changes"""
+def sync_mineral_filters(chosen_mineral, current_wtypes, current_regions):
+    """Update options and preserve valid selections when mineral changes"""
     if chosen_mineral is None:
         chosen_mineral = DEFAULT_MINERAL
 
-    wtypes = get_watertypes(raw_base, chosen_mineral) or []
-    regions = ['NE', 'NW', 'SE', 'SW']
+    # Get new options
+    new_wtypes = get_watertypes(raw_base, chosen_mineral) or []
+    new_regions = ['NE', 'NW', 'SE', 'SW']
 
-    return wtypes, wtypes, regions, regions
+    # Preserve valid selections
+    valid_wtypes = [w for w in (current_wtypes or []) if w in new_wtypes]
+    valid_regions = [r for r in (current_regions or []) if r in new_regions]
+
+    # If nothing valid, select all
+    final_wtypes = valid_wtypes if valid_wtypes else new_wtypes
+    final_regions = valid_regions if valid_regions else new_regions
+
+    return new_wtypes, final_wtypes, new_regions, final_regions
 
 
 
@@ -675,7 +686,7 @@ Output("mineral-dot-chart", "children"),
     Output("water-type-bar", "figure"),
     Output("submit", "disabled"),
     Input("submit", "n_clicks"),
-    State("submit", "n_clicks_timestamp"),
+
     State("mineral-dropdown", "value"),
     State("watertype-checkbox", "value"),
     State("region-checkbox", "value"),
@@ -684,17 +695,17 @@ Output("mineral-dot-chart", "children"),
     State("topkn", "value"),
     prevent_initial_call=True,  # optional but recommended
 )
-def update_all(n_click,click_ts, chosen_mineral, chosen_wtypes, chosen_regions,
+def update_all(n_click,chosen_mineral, chosen_wtypes, chosen_regions,
                start_y, end_y, topkn):
     """Update all visualizations when 'Update Dashboard' is clicked."""
 
-    global latest_click_ts
 
     # No clicks at all -> do nothing
-    if n_click is None or click_ts is None:
+    if n_click is None:
         raise PreventUpdate
 
-    this_ts = click_ts
+    # # ADD THIS: Print debug info to see what's being passed
+    # print(f"Click #{n_click}: mineral={chosen_mineral}, wtypes={chosen_wtypes}, regions={chosen_regions}")
 
     # -------------------------
     # 1. Normalise inputs
@@ -755,10 +766,7 @@ def update_all(n_click,click_ts, chosen_mineral, chosen_wtypes, chosen_regions,
         empty_geo = _blank_map("No data")
         empty_bar = px.bar()  # empty bar chart
 
-        # BEFORE returning: drop stale results
-        if this_ts < latest_click_ts:
-            raise PreventUpdate
-        latest_click_ts = this_ts
+
 
         # dot children, table children, geo fig, bar fig, button disabled?
         return [empty_note], [], empty_geo, empty_bar, False
@@ -782,15 +790,8 @@ def update_all(n_click,click_ts, chosen_mineral, chosen_wtypes, chosen_regions,
     wt_df = select_WTtopk(base, chosen_mineral, topkn)
     bar_fig = build_bar_chart(wt_df, chosen_mineral)
 
-    # -------------------------
-    # 5. FINAL STALE CHECK
-    # -------------------------
-    if this_ts < latest_click_ts:
-        # Another, newer click finished while we were computing -> discard
-        raise PreventUpdate
 
-    # This is now the newest result
-    latest_click_ts = this_ts
+
 
     # dot children, table children, geo fig, bar fig, button disabled?
     return dot_charts, table_list, geo_fig, bar_fig, False
