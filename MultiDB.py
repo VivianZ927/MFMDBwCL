@@ -1,5 +1,6 @@
 import pickle
 import os
+import numpy as np  # ADD THIS IMPORT
 import pandas as pd
 import plotly.express as px
 from dash import (
@@ -39,6 +40,7 @@ server = app.server
 print("Loading data...")
 with open(PICKLE_PATH, "rb") as f:
     raw_base = pickle.load(f)
+
 
 #
 # def optimize_df(df):
@@ -144,7 +146,7 @@ def select_SPtopk_fast(base, mineral, k):
     if base.empty:
         return {}
     else:
-        gb = ['notation',"SamplingPoint", "lat", "lon", "GrossWT"]
+        gb = ['notation', "SamplingPoint", "lat", "lon", "GrossWT"]
 
         # Compute all stats at once, then filter to top k
         all_stats = base.groupby(gb, observed=True, sort=False).agg(
@@ -197,7 +199,14 @@ def select_WTtopk(base, mineral, k):
 
 
 def build_geo_fig(point_agg, mineral, k, start_y, end_y):
-    """Optimized: Direct operations on filtered data"""
+    """
+    OPTIMIZED: Better bubble size scaling to ensure small values are visible.
+
+    Key improvements:
+    1. Uses log scaling when concentration range is very wide (>100x)
+    2. Sets explicit size_max to control maximum bubble size
+    3. Applies minimum size threshold to ensure visibility
+    """
     UK_CENTER = dict(lat=54.5, lon=-3.0)
     UK_ZOOM = 5
     if not point_agg or (isinstance(point_agg, dict) and not point_agg):
@@ -205,7 +214,6 @@ def build_geo_fig(point_agg, mineral, k, start_y, end_y):
         fig.update_maps(
             mapbox_style="streets",
             mapbox=dict(center=UK_CENTER, zoom=UK_ZOOM),
-            # uirevision="uk_map"
         )
         return fig
 
@@ -221,34 +229,69 @@ def build_geo_fig(point_agg, mineral, k, start_y, end_y):
         fig.update_layout(
             mapbox_style="streets",
             mapbox=dict(center=UK_CENTER, zoom=UK_ZOOM),
-            # uirevision="uk_map",
             title=f"UK – {mineral} (Top {k}) ({start_y}-{end_y}) - No valid data"
         )
         return fig
+
+    # ============================================
+    # IMPROVED BUBBLE SIZE SCALING
+    # ============================================
+    d = d.copy()
+
+    # Calculate concentration range
+    min_conc = d["average_concentration"].min()
+    max_conc = d["average_concentration"].max()
+    concentration_range = max_conc / min_conc if min_conc > 0 else 1
+
+    # Strategy 1: Use log scaling for very wide ranges (>100x difference)
+    if concentration_range > 100:
+        # Log scale makes small values more visible
+        d["size_for_plot"] = np.log10(d["average_concentration"] + 1)
+        size_mode = "Log Scale"
+    # Strategy 2: Use square root scaling for moderate ranges (10-100x)
+    elif concentration_range > 10:
+        d["size_for_plot"] = np.sqrt(d["average_concentration"])
+        size_mode = "Sqrt Scale"
+    # Strategy 3: Use linear scaling for small ranges
+    else:
+        d["size_for_plot"] = d["average_concentration"]
+        size_mode = "Linear Scale"
+
+    # Normalize to a reasonable range (optional but helps consistency)
+    # This ensures bubbles are in a good visual range
+    size_min = d["size_for_plot"].min()
+    size_max = d["size_for_plot"].max()
+    if size_max > size_min:
+        # Map to range [5, 50] for better visibility
+        d["size_for_plot"] = 5 + 45 * (d["size_for_plot"] - size_min) / (size_max - size_min)
+    else:
+        d["size_for_plot"] = 25  # All same size if no variation
 
     fig = px.scatter_map(
         d,
         lat="lat",
         lon="lon",
         color="SamplingPoint",
-        size="average_concentration",
+        size="size_for_plot",
+        size_max=50,  # Control maximum bubble size
         hover_name="SamplingPoint",
         hover_data={
             "GrossWT": True,
-            "average_concentration": ":.2f",
-            "lat": True,  # Hide lat/lon in hover
-            "lon": True
+            "average_concentration": ":.2f",  # Show actual concentration
+            "lat": True,
+            "lon": True,
+            "size_for_plot": False  # Hide the scaled size from hover
         },
-        opacity=0.65,
+        opacity=0.7,  # Slightly higher opacity for better visibility
     )
+
     fig.update_layout(
         mapbox_style="streets",
         mapbox=dict(
             center=UK_CENTER,
             zoom=UK_ZOOM
         ),
-        title=f"UK – {mineral} (Top {k}) ({start_y}-{end_y}) ({unit})",
-        # uirevision="uk_map",  # Keeps position between similar updates
+        title=f"UK – {mineral} (Top {k}) ({start_y}-{end_y}) ({unit}) [{size_mode}]",
         showlegend=True,
         margin=dict(l=0, r=0, t=40, b=0)
     )
@@ -339,7 +382,8 @@ def build_table_data(point_agg):
         units = units[0].split("(")[-1]
         unit = units.split(")")[0]
         tbl = (
-            d[["notation","SamplingPoint", "GrossWT", "average_concentration", 'std_concentration', 'num_observations']]
+            d[["notation", "SamplingPoint", "GrossWT", "average_concentration", 'std_concentration',
+               'num_observations']]
             .drop_duplicates()
             .sort_values("average_concentration", ascending=False)
         )
@@ -352,7 +396,8 @@ def build_table_data(point_agg):
         tbl = tbl.assign(NumberOfObservations=tbl["num_observations"].astype(str))
         tbl = tbl.assign(WaterType=tbl["GrossWT"].astype(str))
         tbl = tbl.assign(Notation=tbl["notation"].astype(str))
-        tbl = tbl[["Notation","SamplingPoint", "WaterType", table_cap, "MonthlyStandardDivation", "NumberOfObservations"]]
+        tbl = tbl[
+            ["Notation", "SamplingPoint", "WaterType", table_cap, "MonthlyStandardDivation", "NumberOfObservations"]]
         tbs[m] = tbl.to_dict("records")
     return tbs
 
@@ -400,7 +445,7 @@ def build_chart_table(initial_table, initial_dot, k, click_id=None):
                 figure=fig,
                 style={"padding": 10, "width": "100%"},
                 config={"displayModeBar": False},
-                id=graph_key  # ADD THIS
+                id=graph_key
             )
         )
 
@@ -409,8 +454,6 @@ def build_chart_table(initial_table, initial_dot, k, click_id=None):
 
 def build_bar_chart(df_for_bar, mineral):
     """Optimized: Efficient aggregation"""
-    # df_for_bar=df_for_bar.rename(
-    #     columns={"average monthly concentration":"average monthly concentration for specified water type"})
     if df_for_bar.empty:
         return px.bar()
 
@@ -445,18 +488,9 @@ def build_bar_chart(df_for_bar, mineral):
         title="Water Type — Average Concentration (Top types)",
     )
     fig.update_layout(
-        # uirevision="keep",
         margin=dict(l=40, r=20, t=40, b=40)
     )
     return fig
-
-
-# def _preserve(prev_vals, new_options, select_all_if_empty=True):
-#     """Keep only previously selected values that are still valid"""
-#     if prev_vals is None:
-#         return new_options if select_all_if_empty else []
-#     kept = [v for v in prev_vals if v in new_options]
-#     return kept or (new_options if select_all_if_empty else kept)
 
 
 # =========================
@@ -554,7 +588,7 @@ sidebar = html.Div(
         dcc.Input(
             id="topkn",
             type="number",
-            value=TOP_K,  # Add default value
+            value=TOP_K,
             min=1,
             max=20,
             step=1
@@ -681,9 +715,8 @@ def sync_mineral_filters(chosen_mineral, current_wtypes, current_regions):
     return new_wtypes, final_wtypes, new_regions, final_regions
 
 
-
 @callback(
-Output("mineral-dot-chart", "children"),
+    Output("mineral-dot-chart", "children"),
     Output("mineral-table", "children"),
     Output("mineral-geoscatter-chart", "figure"),
     Output("water-type-bar", "figure"),
@@ -696,19 +729,15 @@ Output("mineral-dot-chart", "children"),
     State("start-year", "value"),
     State("end-year", "value"),
     State("topkn", "value"),
-    prevent_initial_call=True,  # optional but recommended
+    prevent_initial_call=True,
 )
-def update_all(n_click,chosen_mineral, chosen_wtypes, chosen_regions,
+def update_all(n_click, chosen_mineral, chosen_wtypes, chosen_regions,
                start_y, end_y, topkn):
     """Update all visualizations when 'Update Dashboard' is clicked."""
-
 
     # No clicks at all -> do nothing
     if n_click is None:
         raise PreventUpdate
-
-    # # ADD THIS: Print debug info to see what's being passed
-    # print(f"Click #{n_click}: mineral={chosen_mineral}, wtypes={chosen_wtypes}, regions={chosen_regions}")
 
     # -------------------------
     # 1. Normalise inputs
@@ -767,11 +796,8 @@ def update_all(n_click,chosen_mineral, chosen_wtypes, chosen_regions,
             style={"padding": 20, "color": "#999", "textAlign": "center", "fontSize": 14},
         )
         empty_geo = _blank_map("No data")
-        empty_bar = px.bar()  # empty bar chart
+        empty_bar = px.bar()
 
-
-
-        # dot children, table children, geo fig, bar fig, button disabled?
         return [empty_note], [], empty_geo, empty_bar, False
 
     # -------------------------
@@ -793,12 +819,8 @@ def update_all(n_click,chosen_mineral, chosen_wtypes, chosen_regions,
     wt_df = select_WTtopk(base, chosen_mineral, topkn)
     bar_fig = build_bar_chart(wt_df, chosen_mineral)
 
-
-
-
-    # dot children, table children, geo fig, bar fig, button disabled?
     return dot_charts, table_list, geo_fig, bar_fig, False
 
 
 if __name__ == "__main__":
-    app.run(debug=True)  # Disable hot reload for performance
+    app.run(debug=True)
