@@ -291,7 +291,7 @@ def build_geo_fig(point_agg, mineral, k, start_y, end_y):
             center=UK_CENTER,
             zoom=UK_ZOOM
         ),
-        title=f"UK – {mineral} (Top {k}) ({start_y}-{end_y}) ({unit}) [{size_mode}]",
+        title=f"UK – {mineral} (Top {k}) ({start_y}-{end_y}) ({unit})",
         showlegend=True,
         margin=dict(l=0, r=0, t=40, b=0)
     )
