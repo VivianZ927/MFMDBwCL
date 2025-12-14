@@ -1,6 +1,7 @@
 import pickle
 import os
-import numpy as np  # ADD THIS IMPORT
+import gzip
+import numpy as np  
 import pandas as pd
 import plotly.express as px
 from dash import (
@@ -12,7 +13,7 @@ from dash.exceptions import PreventUpdate
 # =========================
 # Config
 # =========================
-PICKLE_PATH = "26compressedMinerals.pkl"
+PICKLE_PATH = "EnWales26Minerals.pkl.gz"
 DEFAULT_MINERAL = 'Lithium'
 S_Y, E_Y = 2020, 2025
 TOP_K = 5
@@ -38,65 +39,9 @@ server = app.server
 # Load data - OPTIMIZED
 # =========================
 print("Loading data...")
-with open(PICKLE_PATH, "rb") as f:
+with gzip.open(PICKLE_PATH, "rb") as f:
     raw_base = pickle.load(f)
 
-
-#
-# def optimize_df(df):
-#     df = df.copy()
-#
-#     # 1) downcast integers
-#     int_cols = df.select_dtypes(include=['int64', 'int32']).columns
-#     df[int_cols] = df[int_cols].apply(
-#         pd.to_numeric, downcast='integer'
-#     )
-#
-#     # 2) downcast floats
-#     float_cols = df.select_dtypes(include=['float64']).columns
-#     df[float_cols] = df[float_cols].apply(
-#         pd.to_numeric, downcast='float'
-#     )
-#
-#     # 3) convert suitable object columns to category
-#     obj_cols = df.select_dtypes(include=['object']).columns
-#     for col in obj_cols:
-#         # heuristic: if relatively few uniques, use category
-#         num_unique = df[col].nunique(dropna=True)
-#         if num_unique / len(df) < 0.5:
-#             df[col] = df[col].astype('category')
-#
-#     return df
-#
-#
-# for _m, _df in raw_base.items():
-#     # Categorical columns
-#     for c in ['notation',"SamplingPoint", "GrossWT", "region", "Season"]:
-#         if c in _df.columns:
-#             _df[c] = _df[c].astype("category")
-#
-#     # Numeric columns
-#     if "Year" in _df.columns:
-#         _df["Year"] = pd.to_numeric(_df["Year"], errors="coerce", downcast='integer')
-#     if "Month" in _df.columns:
-#         _df["Month"] = pd.to_numeric(_df["Month"], errors="coerce", downcast='integer')
-#
-#     # Pre-compute datetime column for faster plotting
-#     if "Year" in _df.columns and "Month" in _df.columns:
-#         _df["datetime"] = pd.to_datetime(
-#             {"year": _df["Year"], "month": _df["Month"], "day": 1},
-#             errors="coerce"
-#         )
-#     raw_base[_m]=optimize_df(_df)
-#
-# print("Data loaded and optimized!")
-# with open('26compressedMinerals.pkl', 'wb') as fp:
-#     pickle.dump(raw_base, fp)
-#     print('compressed df saved successfully to file')
-
-# =========================
-# Helpers - OPTIMIZED
-# =========================
 def get_minerals(dfs):
     minerals = []
     for mineral in dfs.keys():
@@ -115,7 +60,7 @@ def get_watertypes(dfs, mineral):
     return []
 
 
-def define_base(dfs, mineral, start_y, end_y, regions, watertypes):
+def define_base(dfs, mineral, start_y, end_y, regions, watertypes,chosen_area):
     """Optimized: Fast boolean indexing with minimal operations"""
     for c in dfs.keys():
         if mineral in c:
@@ -131,7 +76,13 @@ def define_base(dfs, mineral, start_y, end_y, regions, watertypes):
             base["region"].isin(regions) &
             base["GrossWT"].isin(watertypes)
     )
-    return base[mask]
+    tmp=base[mask]
+    if chosen_area=='Wales':
+        return tmp.loc[tmp['Wales']==True]
+    elif chosen_area=='England':
+        return tmp.loc[tmp['Wales'] == False]
+    else:
+        return tmp
 
 
 def select_SPtopk_fast(base, mineral, k):
@@ -146,7 +97,7 @@ def select_SPtopk_fast(base, mineral, k):
     if base.empty:
         return {}
     else:
-        gb = ['notation', "SamplingPoint", "lat", "lon", "GrossWT"]
+        gb = ["SamplingPoint", "lat", "lon", "GrossWT"]
 
         # Compute all stats at once, then filter to top k
         all_stats = base.groupby(gb, observed=True, sort=False).agg(
@@ -382,7 +333,7 @@ def build_table_data(point_agg):
         units = units[0].split("(")[-1]
         unit = units.split(")")[0]
         tbl = (
-            d[["notation", "SamplingPoint", "GrossWT", "average_concentration", 'std_concentration',
+            d[[ "SamplingPoint", "GrossWT", "average_concentration", 'std_concentration',
                'num_observations']]
             .drop_duplicates()
             .sort_values("average_concentration", ascending=False)
@@ -395,9 +346,9 @@ def build_table_data(point_agg):
         tbl = tbl.assign(MonthlyStandardDivation=tbl["std_concentration"].round(2).astype(str))
         tbl = tbl.assign(NumberOfObservations=tbl["num_observations"].astype(str))
         tbl = tbl.assign(WaterType=tbl["GrossWT"].astype(str))
-        tbl = tbl.assign(Notation=tbl["notation"].astype(str))
+
         tbl = tbl[
-            ["Notation", "SamplingPoint", "WaterType", table_cap, "MonthlyStandardDivation", "NumberOfObservations"]]
+            ["SamplingPoint", "WaterType", table_cap, "MonthlyStandardDivation", "NumberOfObservations"]]
         tbs[m] = tbl.to_dict("records")
     return tbs
 
@@ -498,11 +449,11 @@ def build_bar_chart(df_for_bar, mineral):
 # =========================
 minerals = get_minerals(raw_base)
 DEFAULT_MINERAL = "Lithium"
-
+DEFAULT_AREA='Wales'
 init_regions = get_regions()
 init_wtypes = get_watertypes(raw_base, DEFAULT_MINERAL)
 
-BASE_INIT = define_base(raw_base, DEFAULT_MINERAL, S_Y, E_Y, init_regions, init_wtypes)
+BASE_INIT = define_base(raw_base, DEFAULT_MINERAL, S_Y, E_Y, init_regions, init_wtypes,DEFAULT_AREA)
 _sp_init = select_SPtopk_fast(BASE_INIT, DEFAULT_MINERAL, k=TOP_K)
 geo_init = build_geo_fig(_sp_init, DEFAULT_MINERAL, k=TOP_K, start_y=S_Y, end_y=E_Y)
 
@@ -573,6 +524,15 @@ sidebar = html.Div(
             style={"marginBottom": 12}
         ),
 
+        html.Hr(),
+        html.H4("Area", style={"marginTop": 10}),
+        dcc.Dropdown(
+            ['England','Wales','Both'],
+            'Wales',
+            id="area-dropdown",
+            clearable=False,
+            style={"marginBottom": 12}
+        ),
         html.Hr(),
 
         html.H4("Regions"),
@@ -722,7 +682,7 @@ def sync_mineral_filters(chosen_mineral, current_wtypes, current_regions):
     Output("water-type-bar", "figure"),
     Output("submit", "disabled"),
     Input("submit", "n_clicks"),
-
+    State("area-dropdown", "value"),
     State("mineral-dropdown", "value"),
     State("watertype-checkbox", "value"),
     State("region-checkbox", "value"),
@@ -731,7 +691,7 @@ def sync_mineral_filters(chosen_mineral, current_wtypes, current_regions):
     State("topkn", "value"),
     prevent_initial_call=True,
 )
-def update_all(n_click, chosen_mineral, chosen_wtypes, chosen_regions,
+def update_all(n_click,chosen_area, chosen_mineral, chosen_wtypes, chosen_regions,
                start_y, end_y, topkn):
     """Update all visualizations when 'Update Dashboard' is clicked."""
 
@@ -770,7 +730,7 @@ def update_all(n_click, chosen_mineral, chosen_wtypes, chosen_regions,
     # -------------------------
     # 2. Filter base dataframe
     # -------------------------
-    base = define_base(raw_base, chosen_mineral, start_y, end_y, regions, wtypes)
+    base = define_base(raw_base, chosen_mineral, start_y, end_y, regions, wtypes,chosen_area)
     sp_dict = select_SPtopk_fast(base, chosen_mineral, topkn)
 
     # Helper: build an empty map compatible with px.scatter_map
